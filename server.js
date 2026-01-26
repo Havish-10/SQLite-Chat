@@ -1,0 +1,193 @@
+const express = require('express');
+const http = require('http');
+const WebSocket = require('ws');
+const path = require('path');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const db = require('./database');
+
+const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+const JWT_SECRET = 'super-secret-key-change-in-production'; // In real app, from process.env
+
+// === Middleware & Security ===
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            "default-src": ["'self'"],
+            "script-src": ["'self'"],
+            "style-src": ["'self'", "'unsafe-inline'"], // unsafe-inline for simple UI testing if needed, verify later
+        }
+    }
+}));
+app.use(express.json());
+app.use(cookieParser());
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Rate Limiting for Login
+const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 5, // Limit each IP to 5 requests per windowMs
+    message: 'Too many login attempts, please try again later.'
+});
+
+// Authentication Middleware
+const authenticateToken = (req, res, next) => {
+    const token = req.cookies.token;
+    if (!token) return res.sendStatus(401);
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) return res.sendStatus(403);
+        req.user = user;
+        next();
+    });
+};
+
+// === API Routes ===
+
+// Auth: Register
+app.post('/api/auth/register', async (req, res) => {
+    const { username, password } = req.body;
+    if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+
+    try {
+        const hash = await bcrypt.hash(password, 12);
+        try {
+            db.createUser.run(username, hash);
+            res.status(201).json({ message: 'User created' });
+        } catch (e) {
+            if (e.message.includes('UNIQUE')) {
+                return res.status(409).json({ error: 'Username already exists' });
+            }
+            throw e;
+        }
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Auth: Login
+app.post('/api/auth/login', loginLimiter, async (req, res) => {
+    const { username, password } = req.body;
+    const user = db.getUserByUsername.get(username);
+
+    if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+        return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '8h' });
+
+    // Secure, HttpOnly, SameSite=Strict Cookie
+    res.cookie('token', token, {
+        httpOnly: true,
+        secure: false, // Set to true in production (HTTPS)
+        sameSite: 'strict',
+        maxAge: 8 * 60 * 60 * 1000 // 8 hours
+    });
+
+    res.json({ id: user.id, username: user.username });
+});
+
+// Auth: Logout
+app.post('/api/auth/logout', (req, res) => {
+    res.clearCookie('token');
+    res.sendStatus(200);
+});
+
+// Auth: Me
+app.get('/api/auth/me', authenticateToken, (req, res) => {
+    res.json(req.user);
+});
+
+// Channels: List
+app.get('/api/channels', authenticateToken, (req, res) => {
+    const channels = db.getAllChannels.all();
+    res.json(channels);
+});
+
+// Messages: History
+app.get('/api/channels/:id/messages', authenticateToken, (req, res) => {
+    const messages = db.getMessagesByChannel.all(req.params.id);
+    res.json(messages.reverse()); // Reverse to show oldest first in UI flow usually, or depending on FE logic
+});
+
+// === WebSocket Handling ===
+
+// Helper to parse cookie from handshake
+function parseCookies(request) {
+    const list = {};
+    const rc = request.headers.cookie;
+
+    rc && rc.split(';').forEach(function (cookie) {
+        const parts = cookie.split('=');
+        list[parts.shift().trim()] = decodeURI(parts.join('='));
+    });
+
+    return list;
+}
+
+wss.on('connection', (ws, req) => {
+    const cookies = parseCookies(req);
+    const token = cookies.token;
+
+    if (!token) {
+        ws.close();
+        return;
+    }
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) {
+            ws.close();
+            return;
+        }
+        ws.user = user;
+    });
+
+    ws.currentChannelId = null;
+
+    ws.on('message', (message) => {
+        try {
+            const data = JSON.parse(message);
+
+            if (data.type === 'join_channel') {
+                ws.currentChannelId = data.channelId;
+            } else if (data.type === 'message') {
+                if (!ws.currentChannelId) return;
+
+                // Persist to DB
+                // Using transaction safe wrapper from db module
+                const result = db.createMessage(ws.user.id, ws.currentChannelId, data.content);
+
+                // Broadcast to all clients in this channel
+                const payload = JSON.stringify({
+                    type: 'new_message',
+                    id: result.lastInsertRowid,
+                    content: data.content, // NOTE: Frontend must sanitize this!
+                    user_id: ws.user.id,
+                    username: ws.user.username,
+                    channel_id: ws.currentChannelId,
+                    created_at: new Date().toISOString()
+                });
+
+                wss.clients.forEach(client => {
+                    if (client.readyState === WebSocket.OPEN && client.currentChannelId === ws.currentChannelId) {
+                        client.send(payload);
+                    }
+                });
+            }
+        } catch (e) {
+            console.error('WS Error', e);
+        }
+    });
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+});
