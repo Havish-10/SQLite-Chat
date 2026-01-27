@@ -2,6 +2,7 @@ const app = {
     user: null,
     currentChannelId: null,
     ws: null,
+    pendingUpload: null, // Store selected file info
 
     // UI Elements
     ui: {
@@ -17,7 +18,16 @@ const app = {
         messageInput: document.getElementById('message-input'),
         sendBtn: document.getElementById('send-btn'),
         currentUserDisplay: document.getElementById('current-user-display'),
-        logoutBtn: document.getElementById('logout-btn')
+        logoutBtn: document.getElementById('logout-btn'),
+        // Mobile UI
+        menuBtn: document.getElementById('menu-btn'),
+        sidebar: document.querySelector('.sidebar'),
+        sidebarOverlay: document.getElementById('sidebar-overlay'),
+        // File Upload UI
+        fileInput: document.getElementById('file-upload'),
+        uploadPreview: document.getElementById('upload-preview'),
+        uploadFilename: document.getElementById('upload-filename'),
+        clearUploadBtn: document.getElementById('clear-upload')
     },
 
     init: async () => {
@@ -31,9 +41,15 @@ const app = {
         app.ui.logoutBtn.addEventListener('click', app.handleLogout);
         app.ui.messageForm.addEventListener('submit', app.handleSendMessage);
 
-        // Debounce Send Button/Input (User Requirement: Prevention of duplicate submissions)
-        // Note: Disabling button on submit handles basic double-submit. 
-        // We can also add a brief timeout if needed.
+        // Mobile Menu Events
+        if (app.ui.menuBtn) {
+            app.ui.menuBtn.addEventListener('click', app.toggleSidebar);
+            app.ui.sidebarOverlay.addEventListener('click', app.toggleSidebar);
+        }
+
+        // File Upload Events
+        app.ui.fileInput.addEventListener('change', app.handleFileSelect);
+        app.ui.clearUploadBtn.addEventListener('click', app.clearFileSelection);
     },
 
     checkSession: async () => {
@@ -123,6 +139,11 @@ const app = {
         window.location.reload();
     },
 
+    toggleSidebar: () => {
+        app.ui.sidebar.classList.toggle('open');
+        app.ui.sidebarOverlay.classList.toggle('active');
+    },
+
     // --- Channels & Messages --- //
 
     loadChannels: async () => {
@@ -135,7 +156,13 @@ const app = {
             div.className = 'channel-item';
             div.textContent = ch.name;
             div.dataset.id = ch.id;
-            div.addEventListener('click', () => app.switchChannel(ch));
+            div.addEventListener('click', () => {
+                app.switchChannel(ch);
+                // Auto close on mobile
+                if (window.innerWidth <= 768) {
+                    app.toggleSidebar();
+                }
+            });
             app.ui.channelsList.appendChild(div);
         });
     },
@@ -153,20 +180,14 @@ const app = {
         app.ui.messageInput.disabled = false;
         app.ui.sendBtn.disabled = false;
 
+        // Clear previous channel's upload data
+        app.clearFileSelection();
+
         // Load History
         const res = await fetch(`/api/channels/${channel.id}/messages`);
         const messages = await res.json();
 
-        app.ui.messageFeed.innerHTML = ''; // Clear feed
-        // API returns reverse chronological (newest first).
-        // We rendered feed with flex-direction: column-reverse, so we prepend items?
-        // Wait, standard chat is bottom-up.
-        // If API returns [newest, ..., oldest]
-        // We want to render them such that newest is at bottom.
-        // Actually simpler: API returns reversed [oldest, ..., newest] or we reverse it in FE.
-        // Server sends `messages.reverse()` which implies [oldest, ..., newest].
-        // So we appendChild in order.
-
+        app.ui.messageFeed.innerHTML = '';
         messages.forEach(msg => app.appendMessage(msg));
 
         // Join WS Room
@@ -176,6 +197,13 @@ const app = {
                 channelId: channel.id
             }));
         }
+
+        // Scroll to bottom
+        app.scrollToBottom();
+    },
+
+    scrollToBottom: () => {
+        app.ui.messageFeed.scrollTop = app.ui.messageFeed.scrollHeight;
     },
 
     // --- WebSocket --- //
@@ -199,6 +227,7 @@ const app = {
             if (data.type === 'new_message') {
                 if (data.channel_id === app.currentChannelId) {
                     app.appendMessage(data);
+                    app.scrollToBottom();
                 }
             }
         };
@@ -209,25 +238,83 @@ const app = {
         };
     },
 
-    handleSendMessage: (e) => {
+    // --- File Upload Logic --- //
+
+    handleFileSelect: (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        // Basic Size Check (5MB) - Frontend
+        if (file.size > 5 * 1024 * 1024) {
+            alert('File too large (Max 5MB)');
+            app.clearFileSelection();
+            return;
+        }
+
+        app.pendingUpload = file;
+        app.ui.uploadFilename.textContent = file.name;
+        app.ui.uploadPreview.classList.remove('hidden');
+    },
+
+    clearFileSelection: () => {
+        app.pendingUpload = null;
+        app.ui.fileInput.value = ''; // Reset input
+        app.ui.uploadPreview.classList.add('hidden');
+        app.ui.uploadFilename.textContent = '';
+    },
+
+    handleSendMessage: async (e) => {
         e.preventDefault();
         const content = app.ui.messageInput.value.trim();
-        if (!content || !app.currentChannelId) return;
 
-        // Debounce/Disable
+        if ((!content && !app.pendingUpload) || !app.currentChannelId) return;
+
+        // Disable UI
         app.ui.sendBtn.disabled = true;
+
+        let attachment = null;
+
+        // Upload File if exists
+        if (app.pendingUpload) {
+            const formData = new FormData();
+            formData.append('file', app.pendingUpload);
+
+            try {
+                const res = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    attachment = {
+                        path: data.path,
+                        name: data.originalName
+                    };
+                } else {
+                    alert('Upload failed');
+                    app.ui.sendBtn.disabled = false;
+                    return;
+                }
+            } catch (err) {
+                alert('Upload error');
+                app.ui.sendBtn.disabled = false;
+                return;
+            }
+        }
 
         app.ws.send(JSON.stringify({
             type: 'message',
-            content
+            content,
+            attachment
         }));
 
         app.ui.messageInput.value = '';
-        setTimeout(() => app.ui.sendBtn.disabled = false, 200); // Simple debounce re-enable
+        app.clearFileSelection();
+        setTimeout(() => app.ui.sendBtn.disabled = false, 200);
     },
 
     appendMessage: (msg) => {
-        // SECURITY: Prevent XSS by building DOM nodes manually
         const msgDiv = document.createElement('div');
         msgDiv.className = 'message';
 
@@ -236,7 +323,7 @@ const app = {
 
         const userSpan = document.createElement('span');
         userSpan.className = 'message-username';
-        userSpan.textContent = msg.username; // Safe
+        userSpan.textContent = msg.username;
 
         const timeSpan = document.createElement('span');
         timeSpan.textContent = new Date(msg.created_at).toLocaleTimeString();
@@ -244,15 +331,43 @@ const app = {
         metaDiv.appendChild(userSpan);
         metaDiv.appendChild(timeSpan);
 
-        const contentDiv = document.createElement('div');
-        contentDiv.className = 'message-content';
-        contentDiv.textContent = msg.content; // Safe XSS Prevention
-
         msgDiv.appendChild(metaDiv);
-        msgDiv.appendChild(contentDiv);
+
+        // Content
+        if (msg.content) {
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.textContent = msg.content;
+            msgDiv.appendChild(contentDiv);
+        }
+
+        // Attachment
+        if (msg.attachment_path || (msg.attachment && msg.attachment.path)) {
+            const path = msg.attachment_path || msg.attachment.path;
+            const name = msg.attachment_name || msg.attachment.name;
+
+            const isImage = /\.(jpg|jpeg|png|gif|webp)$/i.test(name);
+
+            if (isImage) {
+                const imgContainer = document.createElement('div');
+                imgContainer.className = 'attachment-preview';
+                const img = document.createElement('img');
+                img.src = path;
+                img.alt = 'Attachment';
+                img.loading = 'lazy';
+                imgContainer.appendChild(img);
+                msgDiv.appendChild(imgContainer);
+            } else {
+                const fileLink = document.createElement('a');
+                fileLink.href = path;
+                fileLink.className = 'attachment-link';
+                fileLink.target = '_blank';
+                fileLink.textContent = `📎 ${name}`;
+                msgDiv.appendChild(fileLink);
+            }
+        }
 
         app.ui.messageFeed.appendChild(msgDiv);
-        app.ui.messageFeed.scrollTop = app.ui.messageFeed.scrollHeight;
     }
 };
 

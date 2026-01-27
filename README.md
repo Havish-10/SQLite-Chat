@@ -5,6 +5,8 @@ A real-time, secure workplace messaging application designed as a functional MVP
 ## 🚀 Features
 
 - **Real-time Messaging**: Instant message delivery using WebSockets (`ws`).
+- **File Uploads**: Drag-and-drop or select files (images, docs) to share in chat. Max 5MB.
+- **Responsive Design**: Mobile-friendly layout with a collapsible sidebar drawer.
 - **Channel System**: Organized communication through persistent channels.
 - **Message Persistence**: Messages are stored in SQLite and the last 50 messages of a channel are loaded upon entry.
 - **Secure Authentication**: User registration and login using `bcrypt` (12 salt rounds) and `JWT` (HttpOnly cookies).
@@ -26,6 +28,8 @@ A real-time, secure workplace messaging application designed as a functional MVP
     - `express-rate-limit` (Rate Limiting)
     - `bcrypt` (Password Hashing)
     - `jsonwebtoken` (Session Management)
+    - `multer` (Secure File Uploads)
+    - `eslint` (Code Quality)
 
 ## ⚙️ How It Works
 
@@ -33,6 +37,7 @@ A real-time, secure workplace messaging application designed as a functional MVP
 2. **Data Integrity**: All database modifications use `better-sqlite3`'s transaction support to ensure atomic writes. WAL (Write-Ahead-Logging) mode is enabled for concurrency.
 3. **Session Management**: Upon login, a JWT is generated and stored in a secure, `HttpOnly` cookie. This cookie is automatically sent with both HTTP requests and the WebSocket handshake, ensuring consistent authentication across protocols.
 4. **Broadcast Logic**: The WebSocket server maintains a registry of connected clients. When a user sends a message, it is validated, saved to the database, and then broadcast only to other users currently viewing the same channel.
+5. **File Uploads**: Files are uploaded to `uploaded_files/` via `multer`. They are served statically (in this MVP) but filenames are sanitized to prevent directory traversal. The directory is git-ignored to prevent leaking user data.
 
 ## 📡 API Documentation
 

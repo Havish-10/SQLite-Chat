@@ -7,6 +7,7 @@ const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const multer = require('multer');
 const db = require('./database');
 
 const app = express();
@@ -21,7 +22,10 @@ app.use(helmet({
         directives: {
             "default-src": ["'self'"],
             "script-src": ["'self'"],
-            "style-src": ["'self'", "'unsafe-inline'"], // unsafe-inline for simple UI testing if needed, verify later
+            "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+            "font-src": ["'self'", "https://fonts.gstatic.com"],
+            "img-src": ["'self'", "data:", "blob:"],
+            "connect-src": ["'self'", "ws:", "wss:"]
         }
     }
 }));
@@ -29,11 +33,29 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Serve Uploads - In production, use S3/Cloud Storage or protect this route
+app.use('/uploads', express.static(path.join(__dirname, 'uploaded_files')));
+
 // Rate Limiting for Login
 const loginLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 5, // Limit each IP to 5 requests per windowMs
-    message: 'Too many login attempts, please try again later.'
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    max: 20, // Limit each IP to 20 requests per windowMs
+    message: { error: 'Too many login attempts, please try again later.' } // return JSON error
+});
+
+// Multer Configuration
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, 'uploaded_files/');
+    },
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, uniqueSuffix + path.extname(file.originalname)); // Secure filename
+    }
+});
+const upload = multer({
+    storage: storage,
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
 });
 
 // Authentication Middleware
@@ -114,7 +136,19 @@ app.get('/api/channels', authenticateToken, (req, res) => {
 // Messages: History
 app.get('/api/channels/:id/messages', authenticateToken, (req, res) => {
     const messages = db.getMessagesByChannel.all(req.params.id);
-    res.json(messages.reverse()); // Reverse to show oldest first in UI flow usually, or depending on FE logic
+    res.json(messages.reverse());
+});
+
+// Upload Endpoint
+app.post('/api/upload', authenticateToken, upload.single('file'), (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+    }
+    // Return path for WS message
+    res.json({
+        path: `/uploads/${req.file.filename}`,
+        originalName: req.file.originalname
+    });
 });
 
 // === WebSocket Handling ===
@@ -162,13 +196,20 @@ wss.on('connection', (ws, req) => {
 
                 // Persist to DB
                 // Using transaction safe wrapper from db module
-                const result = db.createMessage(ws.user.id, ws.currentChannelId, data.content);
+                const result = db.createMessage(
+                    ws.user.id,
+                    ws.currentChannelId,
+                    data.content,
+                    data.attachment ? data.attachment.path : null,
+                    data.attachment ? data.attachment.name : null
+                );
 
                 // Broadcast to all clients in this channel
                 const payload = JSON.stringify({
                     type: 'new_message',
                     id: result.lastInsertRowid,
-                    content: data.content, // NOTE: Frontend must sanitize this!
+                    content: data.content,
+                    attachment: data.attachment,
                     user_id: ws.user.id,
                     username: ws.user.username,
                     channel_id: ws.currentChannelId,

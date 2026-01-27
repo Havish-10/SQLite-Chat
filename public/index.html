@@ -44,16 +44,29 @@
                     <!-- Channels injected here -->
                 </div>
             </div>
+            <div id="sidebar-overlay" class="sidebar-overlay"></div>
 
             <div class="main-content">
                 <div class="chat-header">
+                    <button id="menu-btn" class="menu-btn hidden-desktop">☰</button>
                     <h3 id="active-channel-name">Select a Channel</h3>
                 </div>
                 <div class="message-feed" id="message-feed">
                     <!-- Messages injected here -->
                 </div>
                 <form class="message-input-area" id="message-form">
-                    <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off" disabled>
+                    <div class="upload-container">
+                        <label for="file-upload" class="upload-btn" title="Attach file">📎</label>
+                        <input type="file" id="file-upload" class="hidden">
+                    </div>
+                    <div class="input-wrapper">
+                        <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off"
+                            disabled>
+                        <div id="upload-preview" class="hidden">
+                            <span id="upload-filename"></span>
+                            <button type="button" id="clear-upload">✕</button>
+                        </div>
+                    </div>
                     <button type="submit" id="send-btn" disabled>Send</button>
                 </form>
             </div>

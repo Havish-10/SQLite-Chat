@@ -26,18 +26,28 @@ const init = () => {
         )
     `).run();
 
-    // Messages Table
+    // Messages Table with Attachment Support
     db.prepare(`
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             channel_id INTEGER NOT NULL,
-            content TEXT NOT NULL,
+            content TEXT,
+            attachment_path TEXT,
+            attachment_name TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users (id),
             FOREIGN KEY (channel_id) REFERENCES channels (id)
         )
     `).run();
+
+    // Migration: Add columns if they don't exist (primitive migration for MVP)
+    try {
+        db.prepare('ALTER TABLE messages ADD COLUMN attachment_path TEXT').run();
+        db.prepare('ALTER TABLE messages ADD COLUMN attachment_name TEXT').run();
+    } catch (e) {
+        // Ignore "duplicate column name" error
+    }
 
     // Seed Channels
     const createChannel = db.prepare('INSERT OR IGNORE INTO channels (name) VALUES (?)');
@@ -61,13 +71,13 @@ const stmts = {
 
     // Message Queries
     // Transaction safe message creation
-    createMessage: db.transaction((userId, channelId, content) => {
-        const insert = db.prepare('INSERT INTO messages (user_id, channel_id, content) VALUES (?, ?, ?)');
-        return insert.run(userId, channelId, content);
+    createMessage: db.transaction((userId, channelId, content, attachmentPath, attachmentName) => {
+        const insert = db.prepare('INSERT INTO messages (user_id, channel_id, content, attachment_path, attachment_name) VALUES (?, ?, ?, ?, ?)');
+        return insert.run(userId, channelId, content || '', attachmentPath || null, attachmentName || null);
     }),
 
     getMessagesByChannel: db.prepare(`
-        SELECT m.id, m.content, m.created_at, u.username, m.user_id
+        SELECT m.id, m.content, m.attachment_path, m.attachment_name, m.created_at, u.username, m.user_id
         FROM messages m
         JOIN users u ON m.user_id = u.id
         WHERE m.channel_id = ?
