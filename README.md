@@ -15,6 +15,10 @@ A real-time, secure workplace messaging application designed as a functional MVP
     - XSS protection via DOM Text Node insertion.
     - Brute-force protection on login endpoints.
 - **Responsive UI**: Clean, sidebar-layout interface built with Vanilla CSS/JS.
+- **Enhanced Chat Experience**: 
+    - **Visual Polish**: User avatars with initials, message grouping for distinct threads, and smart timestamps.
+    - **Rich Text**: Support for Markdown (`*bold*`, `_italic_`, `code`) and auto-linkified URLs.
+    - **Social Features**: Real-time "Online Users" list and "User is typing..." indicators.
 
 ## 🛠️ Technology Stack
 

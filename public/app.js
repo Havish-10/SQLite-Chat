@@ -3,6 +3,8 @@ const app = {
     currentChannelId: null,
     ws: null,
     pendingUpload: null, // Store selected file info
+    typingTimeout: null, // For debounce
+    lastTypingSent: 0,
 
     // State for grouping
     lastMessage: {
@@ -33,7 +35,11 @@ const app = {
         fileInput: document.getElementById('file-upload'),
         uploadPreview: document.getElementById('upload-preview'),
         uploadFilename: document.getElementById('upload-filename'),
-        clearUploadBtn: document.getElementById('clear-upload')
+        clearUploadBtn: document.getElementById('clear-upload'),
+
+        // New UI
+        onlineList: document.getElementById('online-users-list'),
+        typingIndicator: document.getElementById('typing-indicator')
     },
 
     init: async () => {
@@ -56,6 +62,9 @@ const app = {
         // File Upload Events
         app.ui.fileInput.addEventListener('change', app.handleFileSelect);
         app.ui.clearUploadBtn.addEventListener('click', app.clearFileSelection);
+
+        // Typing Event
+        app.ui.messageInput.addEventListener('input', app.handleTyping);
     },
 
     checkSession: async () => {
@@ -252,14 +261,15 @@ const app = {
             const data = JSON.parse(event.data);
             if (data.type === 'new_message') {
                 if (data.channel_id === app.currentChannelId) {
-                    // Check date barrier for live messages (simple check against today)
-                    // Ideally check against last message in feed, but simplified:
                     const msgDate = new Date(data.created_at).toDateString();
-                    // If we have no last message, or last message was different day (rare in live session unless midnight crosses)
-                    // For live, we can rely on appendMessage logic if we track lastMessageDate globally 
-                    // But simpler: just append. 
                     app.appendMessage(data);
                     app.scrollToBottom();
+                }
+            } else if (data.type === 'online_users') {
+                app.updateOnlineUsers(data.users);
+            } else if (data.type === 'user_typing') {
+                if (data.channel_id === app.currentChannelId) {
+                    app.showTypingIndicator(data.username);
                 }
             }
         };
@@ -268,6 +278,54 @@ const app = {
             console.log('WS Disconnected. Reconnecting...');
             setTimeout(app.connectWebSocket, 3000);
         };
+    },
+
+    // --- Typing & Online Users --- //
+
+    handleTyping: () => {
+        if (!app.ws || app.ws.readyState !== WebSocket.OPEN) return;
+
+        // Throttle: only send once every 2 seconds
+        if (!app.lastTypingSent || (Date.now() - app.lastTypingSent > 2000)) {
+            app.ws.send(JSON.stringify({ type: 'typing' }));
+            app.lastTypingSent = Date.now();
+        }
+    },
+
+    showTypingIndicator: (username) => {
+        const indicator = app.ui.typingIndicator;
+        indicator.textContent = `${username} is typing`;
+        indicator.className = 'typing-indicator typing-dots'; // Add animation class
+        indicator.classList.remove('hidden');
+
+        // Clear existing timeout to reset timer
+        if (app.typingTimeout) clearTimeout(app.typingTimeout);
+
+        // Hide after 3 seconds
+        app.typingTimeout = setTimeout(() => {
+            indicator.classList.add('hidden');
+            indicator.className = 'typing-indicator hidden';
+        }, 3000);
+    },
+
+    updateOnlineUsers: (users) => {
+        const list = app.ui.onlineList;
+        list.innerHTML = '';
+
+        users.forEach(user => {
+            const div = document.createElement('div');
+            div.className = 'online-user';
+
+            const dot = document.createElement('div');
+            dot.className = 'status-dot';
+
+            const name = document.createElement('span');
+            name.textContent = user.username + (user.id === app.user.id ? ' (You)' : '');
+
+            div.appendChild(dot);
+            div.appendChild(name);
+            list.appendChild(div);
+        });
     },
 
     // --- File Upload Logic --- //

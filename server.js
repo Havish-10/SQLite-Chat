@@ -166,6 +166,29 @@ function parseCookies(request) {
     return list;
 }
 
+// Global Online Users Set
+// Using a Map to track unique users by ID: userId -> { username, count }
+// count allows multiple tabs for same user
+const onlineUsers = new Map();
+
+function broadcastOnlineUsers() {
+    const userList = Array.from(onlineUsers.values()).map(u => ({
+        id: u.id,
+        username: u.username
+    }));
+
+    const payload = JSON.stringify({
+        type: 'online_users',
+        users: userList
+    });
+
+    wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(payload);
+        }
+    });
+}
+
 wss.on('connection', (ws, req) => {
     const cookies = parseCookies(req);
     const token = cookies.token;
@@ -181,6 +204,14 @@ wss.on('connection', (ws, req) => {
             return;
         }
         ws.user = user;
+
+        // Add to online users
+        if (!onlineUsers.has(user.id)) {
+            onlineUsers.set(user.id, { id: user.id, username: user.username, count: 0 });
+        }
+        onlineUsers.get(user.id).count++;
+
+        broadcastOnlineUsers();
     });
 
     ws.currentChannelId = null;
@@ -221,9 +252,39 @@ wss.on('connection', (ws, req) => {
                         client.send(payload);
                     }
                 });
+            } else if (data.type === 'typing') {
+                if (!ws.currentChannelId) return;
+
+                // Broadcast typing status to others in channel
+                const payload = JSON.stringify({
+                    type: 'user_typing',
+                    username: ws.user.username,
+                    channel_id: ws.currentChannelId
+                });
+
+                wss.clients.forEach(client => {
+                    if (client !== ws &&
+                        client.readyState === WebSocket.OPEN &&
+                        client.currentChannelId === ws.currentChannelId) {
+                        client.send(payload);
+                    }
+                });
             }
         } catch (e) {
             console.error('WS Error', e);
+        }
+    });
+
+    ws.on('close', () => {
+        if (ws.user) {
+            const entry = onlineUsers.get(ws.user.id);
+            if (entry) {
+                entry.count--;
+                if (entry.count <= 0) {
+                    onlineUsers.delete(ws.user.id);
+                }
+                broadcastOnlineUsers();
+            }
         }
     });
 });
